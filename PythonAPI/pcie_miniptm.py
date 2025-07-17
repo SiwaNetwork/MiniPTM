@@ -1,17 +1,26 @@
-import mmap
+import mmap      # Для работы с отображением памяти
 import os
-import struct
-import subprocess
-import re
+import struct    # Для упаковки/распаковки двоичных данных
+import subprocess # Для запуска системных команд
+import re        # Регулярные выражения
 from enum import Enum
 import time
 from ctypes import *
 
-# Generic PCIe device class
+# Универсальный класс для работы с PCIe устройством
 
 
 class PCIeDevice:
+    """
+    Класс для работы с PCIe устройством через отображение памяти BAR
+    """
     def __init__(self, bar_address_hex, bar_size, access=mmap.ACCESS_WRITE):
+        """
+        Инициализация PCIe устройства
+        bar_address_hex - адрес BAR в шестнадцатеричном формате
+        bar_size - размер BAR (можно указать с суффиксом K/M/G)
+        access - режим доступа к памяти
+        """
         self.bar_address = int(bar_address_hex, 16)
         self.bar_size = self.convert_size_to_bytes(bar_size)
         self.access = access
@@ -19,14 +28,22 @@ class PCIeDevice:
         self._map_memory()
 
     def convert_size_to_bytes(self, size_str):
+        """
+        Преобразование размера из строки с суффиксом в байты
+        Поддерживает суффиксы K (килобайты), M (мегабайты), G (гигабайты)
+        """
         size_units = {"K": 1024, "M": 1024**2, "G": 1024**3}
         match = re.match(r"(\d+)([KMG])", size_str)
         if match:
             size, unit = match.groups()
             return int(size) * size_units[unit]
-        return int(size_str)  # Return as is if no unit
+        return int(size_str)  # Возвращаем как есть, если нет суффикса
 
     def _map_memory(self):
+        """
+        Отображение памяти устройства в адресное пространство процесса
+        Использует /dev/mem для доступа к физической памяти
+        """
         try:
             with open("/dev/mem", "r+b") as f:
                 self.mm = mmap.mmap(f.fileno(), self.bar_size,
@@ -36,6 +53,10 @@ class PCIeDevice:
             self.mm = None
 
     def read32(self, offset):
+        """
+        Чтение 32-битного значения по смещению
+        offset - смещение от начала BAR
+        """
         if self.mm is None:
             raise Exception("Memory not mapped")
         if offset + 4 > self.bar_size:
@@ -43,9 +64,14 @@ class PCIeDevice:
         self.mm.seek(offset)
         data = self.mm.read(4)
         #print(f"PCIe read32 0x{offset:x}=0x{struct.unpack('I', data)[0]:x}")
-        return struct.unpack('I', data)[0]
+        return struct.unpack('I', data)[0]  # Распаковка как unsigned int
 
     def write32(self, offset, value):
+        """
+        Запись 32-битного значения по смещению
+        offset - смещение от начала BAR
+        value - записываемое значение
+        """
         #print(f"PCIe write32 0x{offset:x}=0x{value:x}")
         if self.mm is None:
             raise Exception("Memory not mapped")

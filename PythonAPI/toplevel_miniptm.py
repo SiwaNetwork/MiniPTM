@@ -1,51 +1,68 @@
-
+# Импорт модулей для работы с устройствами MiniPTM
 from pcie_miniptm import get_miniptm_devices
 from i2c_miniptm import find_i2c_buses
 from board_miniptm import Single_MiniPTM
 from renesas_cm_configfiles import *
-import concurrent.futures
+import concurrent.futures  # Для параллельного выполнения задач
 import time
-import argparse
+import argparse  # Для обработки аргументов командной строки
 from dpll_over_fiber_miniptm import *
-from scipy import stats
+from scipy import stats  # Статистические функции
 import sys
-import threading
-import select
-from scipy.signal import medfilt
+import threading  # Для работы с потоками
+import select    # Для неблокирующего ввода
+from scipy.signal import medfilt  # Медианный фильтр
 import numpy as np
 import random
 import statistics
 
 
 def input_with_timeout(timeout):
+    """
+    Функция для чтения ввода пользователя с таймаутом
+    timeout - время ожидания в секундах
+    Возвращает введенную строку или None если истек таймаут
+    """
     # print("Enter something: ", end='', flush=True)
     ready, _, _ = select.select([sys.stdin], [], [], timeout)
     if ready:
-        return sys.stdin.readline().rstrip('\n')  # Reads the whole line
+        return sys.stdin.readline().rstrip('\n')  # Читаем всю строку
     else:
         return None
 
 
 def input_thread_func(stop_event):
+    """
+    Функция потока для обработки пользовательского ввода
+    stop_event - событие для остановки потока
+    """
     while not stop_event.is_set():
-        result = input_with_timeout(1)  # 1 second timeout
+        result = input_with_timeout(1)  # Таймаут 1 секунда
         if result is not None:
             # print(f"Input received: {result}")
             with MiniPTM.user_input_lock:
                 MiniPTM.user_input_str.append(result.lower())
 
 
-# Genetic algorithm utility functions
+# Вспомогательные функции для генетического алгоритма
 def generate_random_number(start, stop):
+    """
+    Генерация случайного целого числа в диапазоне
+    """
     return random.randint(start, stop)
 
 
 def generate_random_number_exp(min_exponent, max_exponent, min_base, max_base):
-    # Generate a random exponent and base
+    """
+    Генерация случайного числа в экспоненциальной форме
+    min_exponent, max_exponent - диапазон показателя степени
+    min_base, max_base - диапазон основания
+    """
+    # Генерируем случайный показатель и основание
     random_exponent = generate_random_number(min_exponent, max_exponent)
     random_base = generate_random_number(min_base, max_base)
 
-    # Calculate the random number
+    # Вычисляем случайное число
     random_number = random_base * 10 ** random_exponent
 
     return random_number

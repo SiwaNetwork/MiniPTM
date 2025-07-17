@@ -1,98 +1,144 @@
 
 
+# Импорт модулей для работы с PCIe интерфейсом MiniPTM
 from pcie_miniptm import MiniPTM_PCIe, get_miniptm_devices
+# Импорт модулей для работы с I2C шиной
 from i2c_miniptm import find_i2c_buses, miniptm_i2c
+# Импорт модулей для работы с конфигурационными файлами Renesas
 from renesas_cm_configfiles import *
 
+# Импорт регистров Renesas CM
 from renesas_cm_registers import *
-# one class object for ALL MiniPTM boards installed in the system
+# Один объект класса для ВСЕХ плат MiniPTM, установленных в системе
 import time
+# Импорт режимов работы GPIO
 from renesas_cm_gpio import gpiomode
 
 from enum import Enum
-# a single MiniPTM board is characterized by its PCIe info and i2c adapter
+# Одна плата MiniPTM характеризуется своей информацией PCIe и адаптером i2c
 
+# Импорт модуля для работы с DPLL через оптоволокно
 from dpll_over_fiber_miniptm import DPOF_Top
 
+# Класс ПИ-регулятора (пропорционально-интегральный регулятор)
 class PIController:
     def __init__(self, kp, ki):
+        """
+        Инициализация ПИ-регулятора
+        kp - коэффициент пропорциональной составляющей
+        ki - коэффициент интегральной составляющей
+        """
         self.kp = kp
         self.ki = ki
-        self.integral = 0
+        self.integral = 0  # Накопленная интегральная ошибка
 
     def update(self, error):
+        """
+        Обновление выхода регулятора на основе ошибки
+        error - текущая ошибка регулирования
+        """
         self.integral += error
         return self.kp * error + self.ki * self.integral
 
 
 
 
+# Класс для работы с одной платой MiniPTM
 class Single_MiniPTM:
     def __init__(self, board_num, devinfo, adap_num):
+        """
+        Инициализация платы MiniPTM
+        board_num - номер платы
+        devinfo - информация об устройстве PCIe
+        adap_num - номер адаптера I2C
+        """
         self.board_num = board_num
         self.devinfo = devinfo
-        self.bar = devinfo[1]
-        self.bar_size = devinfo[2]
+        self.bar = devinfo[1]  # Base Address Register PCIe
+        self.bar_size = devinfo[2]  # Размер BAR
         self.adap_num = adap_num
 
+        # Создание объектов для работы с PCIe и I2C
         self.PCIe = MiniPTM_PCIe(self.bar, self.bar_size)
         self.i2c = miniptm_i2c(adap_num)
-        self.best_clock_quality_seen = 255 - board_num # hacky
+        self.best_clock_quality_seen = 255 - board_num  # Хак для отслеживания качества часов
         #print(f"Register MiniPTM device {devinfo[0]} I2C bus {adap_num}")
 
+        # Инициализация DPLL (Digital Phase-Locked Loop - цифровая фазовая автоподстройка частоты)
         self.dpll = DPLL(self.i2c, self.i2c.read_dpll_reg_direct,
                          self.i2c.read_dpll_reg_multiple_direct,
                          self.i2c.write_dpll_reg_direct,
                          self.i2c.write_dpll_multiple)
 
+        # Инициализация DPOF (DPLL Over Fiber - DPLL через оптоволокно)
         self.dpof = DPOF_Top(self)
 
+        # Массив ПИ-регуляторов для управления временем дня (Time of Day)
         self.tod_pi = []
         for i in range(4):
             self.tod_pi.append( PIController(0.6, 0.2) )
 
     def led_visual_test(self):
+        """
+        Визуальный тест светодиодов - мигание всеми светодиодами
+        """
         for i in range(4):
-            # do a simple blink a couple times
+            # Простое мигание несколько раз
             print(f"*********LEDS OFF**********")
+            # Выключаем все светодиоды
             for led in range(4):
                 self.set_board_led(led, 0)
 
             time.sleep(0.25)
 
             print(f"*********LEDS ON***********")
+            # Включаем все светодиоды
             for led in range(4):
                 self.set_board_led(led, 1)
             time.sleep(0.25)
 
     def set_led_id_code(self):
-        # set LEDs based on board ID
-        self.set_board_led(0, self.board_num & 0x1)
-        self.set_board_led(1, (self.board_num >> 1) & 0x1)
-        self.set_board_led(2, (self.board_num >> 2) & 0x1)
-        self.set_board_led(3, (self.board_num >> 3) & 0x1)
+        """
+        Установка светодиодов в соответствии с ID платы
+        Используется двоичное представление номера платы
+        """
+        # Устанавливаем светодиоды на основе ID платы
+        self.set_board_led(0, self.board_num & 0x1)        # Младший бит
+        self.set_board_led(1, (self.board_num >> 1) & 0x1) # Второй бит
+        self.set_board_led(2, (self.board_num >> 2) & 0x1) # Третий бит
+        self.set_board_led(3, (self.board_num >> 3) & 0x1) # Старший бит
 
     def set_board_led(self, led_num, val):
+        """
+        Установка состояния светодиода на плате
+        led_num - номер светодиода (0-2)
+        val - состояние (0 - выкл, 1 - вкл)
+        """
         if (led_num < 0 or led_num > 2):
             print(f"Invalid LED number {led_num}")
             return
         if ( led_num == 0 ):
-            #GPIO13
+            # GPIO13 управляет первым светодиодом
             self.dpll.gpio.configure_pin(13, gpiomode.OUTPUT,val)
         if ( led_num == 1 ):
-            #GPIO5
+            # GPIO5 управляет вторым светодиодом
             self.dpll.gpio.configure_pin(5, gpiomode.OUTPUT,val)
         if ( led_num == 2 ):
-            #GPIO6
+            # GPIO6 управляет третьим светодиодом
             self.dpll.gpio.configure_pin(6, gpiomode.OUTPUT,val)
 
 
 
     def init_eeprom_addr(self, block=0):
+        """
+        Инициализация адреса EEPROM
+        block - блок памяти (0 или 1)
+        Адрес 0x54 для блока 0, 0x55 для блока 1
+        """
         addr = 0x54
         if (block):
             addr = 0x55
-        # check if cached address matches what I want to set
+        # Проверяем, совпадает ли кэшированный адрес с тем, что хотим установить
         if (hasattr(self, "eeprom_addr")):
             if self.eeprom_addr != addr:
                 self.dpll.modules["EEPROM"].write_field(
@@ -104,22 +150,29 @@ class Single_MiniPTM:
             self.eeprom_addr = addr
 
     def write_to_eeprom(self, offset, data):
+        """
+        Запись данных в EEPROM
+        offset - смещение в памяти
+        data - данные для записи (массив байтов)
+        """
+        # Выбираем блок памяти в зависимости от смещения
         if (offset > 0xffff):
             self.init_eeprom_addr(1)
         else:
             self.init_eeprom_addr(0)
 
+        # Форматируем данные для отладочного вывода
         hex_values = [f"{value:02x}" for value in data]
         print(
             f"Write Board {self.board_num} EEPROM offset 0x{offset:x} data {hex_values}")
 
-        # write offset
+        # Записываем смещение (младший и старший байты)
         self.dpll.modules["EEPROM"].write_field(0, "EEPROM_OFFSET_LOW", "EEPROM_OFFSET",
                                                 offset & 0xff)
         self.dpll.modules["EEPROM"].write_field(0, "EEPROM_OFFSET_HIGH", "EEPROM_OFFSET",
                                                 (offset >> 8) & 0xff)
 
-        # write byte count
+        # Записываем количество байтов (максимум 128)
         data_len = len(data)
         if (data_len > 128):
             data_len = 128
@@ -128,24 +181,30 @@ class Single_MiniPTM:
         self.dpll.modules["EEPROM"].write_field(
             0, "EEPROM_SIZE", "BYTES", data_len)
 
-        # write the data to the data buffer
+        # Записываем данные в буфер
         for i in range(data_len):
             reg = f"BYTE_OTP_EEPROM_PWM_BUFF_{i}"
             self.dpll.modules["EEPROM_DATA"].write_reg(0, reg, data[i])
 
-        # write the command
+        # Записываем команду для выполнения операции записи
         self.dpll.modules["EEPROM"].write_field(
-            0, "EEPROM_CMD_LOW", "EEPROM_CMD", 0x2)  # Write to EEPROM
+            0, "EEPROM_CMD_LOW", "EEPROM_CMD", 0x2)  # Команда записи в EEPROM
         self.dpll.modules["EEPROM"].write_field(
-            0, "EEPROM_CMD_HIGH", "EEPROM_CMD", 0xEE)  # Write to EEPROM
+            0, "EEPROM_CMD_HIGH", "EEPROM_CMD", 0xEE)  # Старший байт команды
 
-        # give it some time
+        # Даем время на выполнение записи (0.5мс на байт)
         time.sleep(0.0005 * data_len)
 
     def write_eeprom_file(self, eeprom_file="8A34002_MiniPTMV3_12-29-2023_Julian_AllPhaseMeas_EEPROM.hex"):
+        """
+        Запись файла Intel HEX в EEPROM
+        eeprom_file - путь к файлу в формате Intel HEX
+        """
+        # Парсим Intel HEX файл
         hex_file_data, non_data_records_debug = parse_intel_hex_file(
             eeprom_file)
-        self.eeprom_addr = 0  # make sure this gets reset
+        self.eeprom_addr = 0  # Сбрасываем адрес EEPROM
+        # Записываем данные по адресам
         for addr in hex_file_data.keys():
             # print(f"Write addr {addr:02x} = {hex_file_data[addr]}")
             self.write_to_eeprom(addr, hex_file_data[addr])
