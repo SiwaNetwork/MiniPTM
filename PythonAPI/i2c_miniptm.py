@@ -1,49 +1,66 @@
 
 import os
 import glob
-import smbus2
+import smbus2  # Библиотека для работы с I2C/SMBus
 import struct
 import math
 
-# Constants for SFP module I2C slave addresses
-SFP_ADDRESS_A0 = 0x50  # Address for serial ID and vendor information
-SFP_ADDRESS_A2 = 0x51  # Address for diagnostic information
+# Константы для адресов I2C модуля SFP
+SFP_ADDRESS_A0 = 0x50  # Адрес для серийного ID и информации о производителе
+SFP_ADDRESS_A2 = 0x51  # Адрес для диагностической информации
 
 
 
 
 def find_i2c_buses(adapter_name):
+    """
+    Поиск I2C шин по имени адаптера
+    adapter_name - имя адаптера для поиска
+    Возвращает список номеров найденных I2C шин
+    """
     i2c_buses = []
-    # Path to the I2C adapter information
+    # Путь к информации об адаптерах I2C в sysfs
     i2c_adapter_path = '/sys/class/i2c-adapter/*'
     for i2c_bus_path in glob.glob(i2c_adapter_path):
         try:
+            # Читаем имя адаптера из файла
             with open(os.path.join(i2c_bus_path, 'name'), 'r') as file:
                 name = file.read().strip()
                 if adapter_name in name:
-                    # Extract the bus number from the path
+                    # Извлекаем номер шины из пути
                     bus_number = int(i2c_bus_path.split('/')
                                      [-1].replace('i2c-', ''))
                     i2c_buses.append(bus_number)
         except IOError:
-            pass  # Ignore if we can't read the file for some reason
+            pass  # Игнорируем, если не можем прочитать файл
     return i2c_buses
 
 
 class miniptm_i2c:
+    """
+    Класс для работы с I2C интерфейсом платы MiniPTM
+    """
     def __init__(self, bus_num: int):
+        """
+        Инициализация I2C интерфейса
+        bus_num - номер I2C шины
+        """
         self.bus_num = bus_num
         self.bus = smbus2.SMBus(bus_num)
-        self.DPLL_ADDRESS = 0x58
-        self.MUX_ADDRESS = 0x70
-        self.cur_base_addr = None  # used by DPLL code
-        self.cur_mux_open = 0
+        self.DPLL_ADDRESS = 0x58    # Адрес DPLL на шине I2C
+        self.MUX_ADDRESS = 0x70     # Адрес мультиплексора I2C
+        self.cur_base_addr = None   # Текущий базовый адрес (используется кодом DPLL)
+        self.cur_mux_open = 0       # Текущее состояние мультиплексора
 
     def __str__(self):
         return "MiniPTM i2c"
 
     def open_i2c_dpll(self):
-        # Set up I2C mux to access DPLL
+        """
+        Открытие канала мультиплексора для доступа к DPLL
+        Устанавливает мультиплексор на канал 0x8
+        """
+        # Настраиваем мультиплексор I2C для доступа к DPLL
         if (self.cur_mux_open != 0x8):
             print(f"Opening mux to DPLL")
             self.bus.write_byte_data(self.MUX_ADDRESS, 0x0, 0x8)
@@ -51,12 +68,19 @@ class miniptm_i2c:
         self.cur_base_addr = None
 
     def write_dpll_reg(self, base_addr, offset, value):
+        """
+        Запись в регистр DPLL
+        base_addr - базовый адрес модуля
+        offset - смещение регистра
+        value - записываемое значение
+        """
         self.open_i2c_dpll()
         full_addr = base_addr + offset
-        baseaddr_lower = full_addr & 0xff
-        baseaddr_upper = (full_addr >> 8) & 0xff
+        baseaddr_lower = full_addr & 0xff      # Младший байт адреса
+        baseaddr_upper = (full_addr >> 8) & 0xff  # Старший байт адреса
 
         #print(f"Write DPLL register, addr {full_addr:#02x} = {value:#02x}")
+        # Если базовый адрес изменился, обновляем его
         if self.cur_base_addr != baseaddr_upper:
             self.bus.write_i2c_block_data(self.DPLL_ADDRESS, 0xfc, [
                                           baseaddr_lower, baseaddr_upper, 0x10, 0x20])
@@ -66,6 +90,11 @@ class miniptm_i2c:
         #print(f"Write DPLL register, module {base_addr:#04x}, addr {offset:#02x} = {value:#02x}")
 
     def write_dpll_reg_direct(self, addr, value):
+        """
+        Прямая запись в регистр DPLL по абсолютному адресу
+        addr - абсолютный адрес регистра
+        value - записываемое значение
+        """
         self.open_i2c_dpll()
         baseaddr_lower = addr & 0xff
         baseaddr_upper = (addr >> 8) & 0xff
@@ -79,6 +108,11 @@ class miniptm_i2c:
         self.bus.write_byte_data(self.DPLL_ADDRESS, baseaddr_lower, value)
 
     def write_dpll_multiple(self, addr, data_bytes):
+        """
+        Запись нескольких байтов в DPLL начиная с указанного адреса
+        addr - начальный адрес
+        data_bytes - массив байтов для записи
+        """
         self.open_i2c_dpll()
         baseaddr_lower = addr & 0xff
         baseaddr_upper = (addr >> 8) & 0xff
@@ -94,11 +128,18 @@ class miniptm_i2c:
 
 
     def read_dpll_reg(self, base_addr, offset):
+        """
+        Чтение регистра DPLL
+        base_addr - базовый адрес модуля
+        offset - смещение регистра
+        Возвращает прочитанное значение
+        """
         self.open_i2c_dpll()
         full_addr = base_addr + offset
         baseaddr_lower = full_addr & 0xff
         baseaddr_upper = (full_addr >> 8) & 0xff
 
+        # Обновляем базовый адрес если необходимо
         if self.cur_base_addr != baseaddr_upper:
             self.bus.write_i2c_block_data(self.DPLL_ADDRESS, 0xfc, [
                                           baseaddr_lower, baseaddr_upper, 0x10, 0x20])
@@ -109,6 +150,11 @@ class miniptm_i2c:
         return val
 
     def read_dpll_reg_direct(self, addr):
+        """
+        Прямое чтение регистра DPLL по абсолютному адресу
+        addr - абсолютный адрес регистра
+        Возвращает прочитанное значение
+        """
         self.open_i2c_dpll()
         baseaddr_lower = addr & 0xff
         baseaddr_upper = (addr >> 8) & 0xff
@@ -124,10 +170,22 @@ class miniptm_i2c:
 
 
     def read_dpll_reg_multiple_direct(self, addr, length):
+        """
+        Прямое чтение нескольких регистров DPLL
+        addr - начальный адрес
+        length - количество байтов для чтения
+        """
         #print(f"Called read dpll reg multiple direct addr={addr} len={length}")
         return self.read_dpll_reg_multiple(addr, 0, length)
 
     def read_dpll_reg_multiple(self, base_addr, offset, numbytes):
+        """
+        Чтение нескольких регистров DPLL
+        base_addr - базовый адрес модуля (или полный адрес если offset=0)
+        offset - смещение от базового адреса
+        numbytes - количество байтов для чтения
+        Возвращает список прочитанных байтов
+        """
         #print(f"Called read dpll reg multiple base={base_addr} off={offset} num={numbytes}")
         self.open_i2c_dpll()
         full_addr = base_addr + offset
@@ -144,9 +202,15 @@ class miniptm_i2c:
 
 
 
-    # Function to read data from an I2C device
+    # Функция для чтения данных с устройства I2C
 
     def read_i2c_data(self, address, start_reg, length):
+        """
+        Универсальная функция чтения данных с устройства I2C
+        address - адрес устройства на шине I2C
+        start_reg - начальный регистр для чтения
+        length - количество байтов для чтения
+        """
         try:
             data = self.bus.read_i2c_block_data(address, start_reg, length)
             return data

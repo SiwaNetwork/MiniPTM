@@ -1,89 +1,53 @@
 import time
-from collections import deque
+from collections import deque  # Двусторонняя очередь для эффективной работы с данными
 from board_miniptm import *
 from renesas_cm_registers import *
 import random
 
 
 """
-For DPLL over fiber, it relies on three mechanisms:
-    1. TOD transmission by the encoders
-        a. Each encoder has it's own TOD
-        b. effectively 4 TX buffers
-    2. TOD reception by the decoders
-        a. Only one RX buffer, PWM_TOD 0xce80
-        b. only seconds portion is used, but 6 bytes of second data
-    3. PWM User Data transfer
-        a. Only one buffer for TX and RX
-        b. 128 byte
+Для DPLL через оптоволокно используются три механизма:
+    1. Передача TOD (Time of Day - время дня) кодировщиками
+        a. Каждый кодировщик имеет свой собственный TOD
+        b. Фактически 4 буфера передачи (TX)
+    2. Прием TOD декодерами
+        a. Только один буфер приема (RX), PWM_TOD 0xce80
+        b. Используется только часть с секундами, 6 байт данных секунд
+    3. Передача пользовательских данных PWM
+        a. Только один буфер для TX и RX
+        b. 128 байт
 
 
-For anything more than a few bytes, PWM User Data is the only reasonable mechanism
+Для передачи более нескольких байт, PWM User Data - единственный разумный механизм
 
-Receive path is most constrained
-    1. Only one decoder should be enabled at a time
-    2. It may take time for a new frame to come in, even if other side wants to transmit
+Путь приема наиболее ограничен:
+    1. Только один декодер должен быть включен одновременно
+    2. Может потребоваться время для прихода нового кадра, даже если другая сторона хочет передать
 
-Design mainly around optimizing the receive Path
+Дизайн в основном оптимизирован для пути приема
 
-Goal of communication with TOD transmission / reception is to negotiate User data transfer
+Цель коммуникации с передачей/приемом TOD - согласование передачи пользовательских данных
 
-Define protocol using upper two bytes of TOD, TOD_SEC[5] and TOD_SEC[4]
+Определение протокола с использованием двух старших байтов TOD: TOD_SEC[5] и TOD_SEC[4]
 
-Assume these second fields are dedicated, only using 4 bytes of seconds, 132 years good enough
+Предполагаем, что эти поля секунд выделены, используем только 4 байта секунд (132 года достаточно)
 
-Protocol is a handshake process
-    1. One or both sides sends an initial (0x0) state data TOD with desired action and a random byte
+Протокол представляет собой процесс рукопожатия:
+    1. Одна или обе стороны отправляют начальные (0x0) данные состояния TOD с желаемым действием и случайным байтом
 
-    2. If both random numbers are the same, then both sides must change their number and wait for other side to change too
+    2. Если оба случайных числа одинаковы, то обе стороны должны изменить свое число и ждать, пока другая сторона тоже изменит
 
-    3. Whichever side has the lowest random byte wins priority for it's action to be completed
+    3. Сторона с наименьшим случайным байтом получает приоритет для выполнения своего действия
 
-    4. If the winning side wants to query something, then it readies it's PWM user data for reception, otherwise it readies it for transmission
+    4. Если выигравшая сторона хочет что-то запросить, она готовит свои PWM пользовательские данные для приема, иначе готовит для передачи
 
-    5. LOSING SIDE
-        a. If the request is a query, the losing side readies its PWM User data for transmission, but doesnt sent it yet, it sends accept (0x1) state data TOD
-        b. If the request is a write, the losing side readies its PWM User data for reception (clearing first byte of buffer), and sends accept (0x1) state data TOD
+    5. ПРОИГРАВШАЯ СТОРОНА:
+        a. Если запрос - это запрос данных, проигравшая сторона готовит свои PWM пользовательские данные для передачи, но еще не отправляет, она отправляет TOD состояния принятия (0x1)
+        b. Если запрос - это запись, проигравшая сторона готовит свои PWM пользовательские данные для приема (очищая первый байт буфера) и отправляет TOD состояния принятия (0x1)
 
-    6. The winning side, upon reception of accept, also sends accept (0x1) state data
-        a. If the request is a query, it waits for PWM User data reception completion
-        b. If the request is a write, it goes through process of sending user data
-
-    7. If the request is a query or a write, the losing side sends end state (0x2) TOD first, and uses random byte field to send its PWM User status
-        a. If the request is a write, losing side RX side stores this full buffer and passes to higher layer, 128 byte buffer format defined elsewhere
-        b. If the request is a query, winner side RX side stores this full buffer and passes to higher layer, 128 byte buffer format defined elsewhere
-
-    8. Two options for winner
-        a. If done with transmit , go back to normal TOD transmission without data flag set
-        b. If more data to transmit, send initial (0x0) state data TOD with desired action. Repeated start kind of behavior, go back to 4
-
-    9. For receiver
-        a. If see data flag go away, then transaction is completed, handle data buffer however that data buffer is defined
-        b. If see data flag stay and state go back to 0x0, then go back to step 4 here
-
-Defined in the layout in registers map but description is here PWM_RX_INFO_LAYOUT
-
-TOD_SEC[5][7] = Data Flag, set when the TOD field is being aliased for handshaking, 0 when normal TOD
-TOD_SEC[5][6:5] = Handshake flag
-TOD_SEC[5][4] = Slave following flag, tells the other side that the slave
-    has started to follow TOD, valid with or without Data Flag
-TOD_SEC[5][0:3] = Transaction ID
-    0x0 = Read chip info
-            a. Status of all inputs, STATUS.INX_MON_STATUS bytes for 0-15 (16 bytes)
-            b. DPLL Status of DPLLs , STATUS.DPLLX_STATUS bytes for 0-3 (4 bytes)
-            c. Input frequency monitor info, STATUS.INX_MON_FREQ_STATUS for 0-15, (32 bytes)
-            d. A name string, 16 bytes including null
-            e. TOD delta seen between received TOD frame and local TOD counter, used for round trip calculations (11 bytes)
-            f. TOD delta sign, one byte
-
-    0x1 = Write to board
-            a. LED values bit-wise, 1 byte
-            b. Force follow this requester, 1 byte, must be 0xa5 for this function, otherwise doesn't use
-                Follow frequency and TOD and PPS
-            c. The TOD offset seen on receiver at far side, for round trip compensation on follower side
-
-TOD_SEC[4][7:0] = Random value for winner / loser determination, PWM User data state from loser upon end state
-
+    6. Выигравшая сторона, при получении принятия, также отправляет принятие (0x1) состояния данных
+        a. Если запрос - это запрос данных, она ждет завершения приема PWM пользовательских данных
+        b. Если запрос - это запись, она проходит процесс отправки пользовательских данных
 """
 
 
