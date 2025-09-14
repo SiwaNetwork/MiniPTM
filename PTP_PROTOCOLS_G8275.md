@@ -180,8 +180,3 @@
 Выбор между ними зависит от масштаба сети, требований к точности и бюджета проекта. Для соответствия ТЗ МТС рекомендуется начать с G.8275.1, с возможностью расширения до G.8275.2 в будущем.
 
 ---
-
-*Источники:*
-- ITU-T G.8275.1: "Precision time protocol telecom profile for frequency synchronization"
-- ITU-T G.8275.2: "Precision time protocol telecom profile for phase/time synchronization with full timing support from the network"
-- IEEE 1588-2019: "Precision Time Protocol (PTP) Version 2.1"
